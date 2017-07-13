@@ -1,11 +1,13 @@
+import os
 from collections import namedtuple
-from hashlib import sha256
 from typing import TypeVar, Sequence, Dict, Set
 
 from anoncreds.protocol.utils import toDictWithStrValues, \
-    fromDictWithStrValues, deserializeFromStr
+    fromDictWithStrValues, deserializeFromStr, encodeAttr, crypto_int_to_str, to_crypto_int, isCryptoInteger, \
+    intToArrayBytes, bytesToInt
 from config.config import cmod
-
+from typing import NamedTuple
+import uuid
 
 class AttribType:
     def __init__(self, name: str, encode: bool):
@@ -83,8 +85,7 @@ class Attribs:
                 attrName = at.name
                 if attrName in self._vals:
                     if at.encode:
-                        encoded[attrName] = cmod.Conversion.bytes2integer(
-                            sha256(str(self._vals[attrName]).encode()).digest())
+                        encoded[attrName] = encodeAttr(self._vals[attrName])
                     else:
                         encoded[attrName] = self._vals[at.name]
         return encoded
@@ -148,9 +149,21 @@ class StrSerializer:
 class SchemaKey(
     namedtuple('SchemaKey', 'name, version, issuerId'),
     NamedTupleStrSerializer):
+    def __new__(cls, name=None, version=None, issuerId=None):
+        return super(SchemaKey, cls).__new__(cls, name, version, issuerId)
+
     def __hash__(self):
         keys = (self.name, self.version, self.issuerId)
         return hash(keys)
+
+    def __str__(self):
+        rtn = list()
+        rtn.append('Schema Key')
+        rtn.append("    Name: {}".format(str(self.name)))
+        rtn.append("    Version: {}".format(str(self.version)))
+        rtn.append("    IssuerId: {}".format(str(self.issuerId)))
+
+        return os.linesep.join(rtn)
 
 
 class ID(namedtuple('ID', 'schemaKey, schemaId, seqId')):
@@ -160,12 +173,14 @@ class ID(namedtuple('ID', 'schemaKey, schemaId, seqId')):
 
 
 class Schema(namedtuple('Schema',
-                        'name, version, attrNames, schemaType, '
-                        'issuerId, seqId'),
+                        'name, version, attrNames, issuerId, seqId'),
              NamedTupleStrSerializer):
-    def __new__(cls, name, version, attrNames, schemaType, issuerId, seqId=None):
-        return super(Schema, cls).__new__(cls, name, version,
-                                          attrNames, schemaType, issuerId,
+    def __new__(cls, name, version, attrNames, issuerId, seqId=None):
+        return super(Schema, cls).__new__(cls,
+                                          name,
+                                          version,
+                                          attrNames,
+                                          issuerId,
                                           seqId)
 
     def getKey(self):
@@ -177,8 +192,39 @@ class PublicKey(namedtuple('PublicKey', 'N, Rms, Rctxt, R, S, Z, seqId'),
     def __new__(cls, N, Rms, Rctxt, R, S, Z, seqId=None):
         return super(PublicKey, cls).__new__(cls, N, Rms, Rctxt, R, S, Z, seqId)
 
+    def __eq__(self, other):
+        return self.N == other.N and self.Rms == other.Rms \
+               and self.Rctxt == other.Rctxt and self.S == other.S \
+               and self.Z == other.Z and self.seqId == other.seqId \
+               and dict(self.R) == dict(other.R)
 
-SecretKey = namedtuple('SecretKey', 'pPrime, qPrime')
+    def to_str_dict(self):
+        public_key = {
+            'n': str(crypto_int_to_str(self.N)),
+            's': str(crypto_int_to_str(self.S)),
+            'rms': str(crypto_int_to_str(self.Rms)),
+            'rctxt': str(crypto_int_to_str(self.Rctxt)),
+            'z': str(crypto_int_to_str(self.Z)),
+            'r': {k: str(crypto_int_to_str(v)) for k, v in self.R.items()}
+        }
+
+        return public_key
+
+    @classmethod
+    def from_str_dict(cls, data):
+        N = to_crypto_int(data['n'])
+        Rms = to_crypto_int(data['rms'], data['n'])
+        Rctxt = to_crypto_int(data['rctxt'], data['n'])
+        S = to_crypto_int(data['s'], data['n'])
+        Z = to_crypto_int(data['z'], data['n'])
+        R = {k: to_crypto_int(v, data['n']) for k, v in data['r'].items()}
+
+        return cls(N, Rms, Rctxt, R, S, Z)
+
+
+class SecretKey(namedtuple('SecretKey', 'pPrime, qPrime'),
+                NamedTupleStrSerializer):
+    pass
 
 
 class RevocationPublicKey(namedtuple('RevocationPublicKey',
@@ -190,7 +236,9 @@ class RevocationPublicKey(namedtuple('RevocationPublicKey',
                                                        seqId)
 
 
-RevocationSecretKey = namedtuple('RevocationSecretKey', 'x, sk')
+class RevocationSecretKey(namedtuple('RevocationSecretKey', 'x, sk'),
+                          NamedTupleStrSerializer):
+    pass
 
 
 class AccumulatorPublicKey(namedtuple('AccumulatorPublicKey', 'z, seqId'),
@@ -199,11 +247,16 @@ class AccumulatorPublicKey(namedtuple('AccumulatorPublicKey', 'z, seqId'),
         return super(AccumulatorPublicKey, cls).__new__(cls, z, seqId)
 
 
-AccumulatorSecretKey = namedtuple('AccumulatorSecretKey', 'gamma')
+class AccumulatorSecretKey(
+    namedtuple('AccumulatorSecretKey', 'gamma'), NamedTupleStrSerializer):
+    pass
 
 
-class Predicate(namedtuple('Predicate', 'attrName, value, type'),
+class Predicate(namedtuple('Predicate', 'attrName, value, type, schema_seq_no, issuer_did'),
                 NamedTupleStrSerializer):
+    def __new__(cls, attrName, value, type, schema_seq_no=None, issuer_did=None):
+        return super(Predicate, cls).__new__(cls, attrName, value, type, schema_seq_no, issuer_did)
+
     def __key(self):
         return self.attrName, self.value, self.type
 
@@ -213,11 +266,30 @@ class Predicate(namedtuple('Predicate', 'attrName, value, type'),
     def __hash__(self):
         return hash(self.__key())
 
+    def to_str_dict(self):
+        return {
+            'attr_name': self.attrName,
+            'value': self.value,
+            'p_type': self.type,
+            'schema_seq_no': self.schema_seq_no,
+            'issuer_did': self.issuer_did
+        }
+
+    @classmethod
+    def from_str_dict(cls, d):
+        attrName = d['attr_name']
+        value = d['value']
+        type = d['p_type']
+        schema_seq_no = int(d['schema_seq_no']) if (('schema_seq_no' in d) and d['schema_seq_no']) else None
+        issuer_did = int(d['issuer_did']) if (('issuer_did' in d) and d['issuer_did']) else None
+        return PredicateGE(attrName=attrName, value=value, type=type,
+                         schema_seq_no=schema_seq_no, issuer_did=issuer_did)
+
 
 # TODO: now we consdider only  >= predicate. Support other types of predicates
 class PredicateGE(Predicate):
-    def __new__(cls, attrName, value, type='ge'):
-        return super(PredicateGE, cls).__new__(cls, attrName, value, type)
+    def __new__(cls, attrName, value, type='GE', schema_seq_no=None, issuer_did=None):
+        return super(PredicateGE, cls).__new__(cls, attrName, value, type, schema_seq_no, issuer_did)
 
 
 class Accumulator:
@@ -231,6 +303,11 @@ class Accumulator:
     def isFull(self):
         return self.currentI > self.L
 
+    def __eq__(self, other):
+        return self.iA == other.iA and self.acc == other.acc \
+               and self.V == other.V and self.L == other.L \
+               and self.currentI == other.currentI
+
 
 ClaimInitDataType = namedtuple('ClaimInitDataType', 'U, vPrime')
 
@@ -240,13 +317,50 @@ class ClaimRequest(namedtuple('ClaimRequest', 'userId, U, Ur'),
     def __new__(cls, userId, U, Ur=None):
         return super(ClaimRequest, cls).__new__(cls, userId, U, Ur)
 
+    def to_str_dict(self):
+        return {
+            'prover_did': str(self.userId),
+            'u': str(crypto_int_to_str(self.U)),
+            'ur': self.Ur
+        }
+
+    @classmethod
+    def from_str_dict(cls, data, n):
+        u = to_crypto_int(data['u'], str(n))
+
+        return cls(userId=data['prover_did'], U=u, Ur=data['ur'])
+
 
 # Accumulator = namedtuple('Accumulator', ['iA', 'acc', 'V', 'L'])
 
 class PrimaryClaim(
-    namedtuple('PrimaryClaim', 'attrs, encodedAttrs, m2, A, e, v'),
+    namedtuple('PrimaryClaim', 'm2, A, e, v'),
     NamedTupleStrSerializer):
     pass
+
+    def __str__(self):
+        rtn = ['Attributes:']
+        for key, value in self.attrs.items():
+            rtn.append('    {}: {}'.format(str(key), str(value)))
+
+        return os.linesep.join(rtn)
+
+    def to_str_dict(self):
+        return {
+            'm2': str(crypto_int_to_str(self.m2)),
+            'a': str(crypto_int_to_str(self.A)),
+            'e': str(self.e),
+            'v': str(self.v)
+        }
+
+    @classmethod
+    def from_str_dict(cls, data, n):
+        m2 = to_crypto_int(data['m2'])
+        a = to_crypto_int(data['a'], str(n))
+        e = int(data['e'])
+        v = int(data['v'])
+
+        return cls(m2=m2, A=a, e=e, v=v)
 
 
 class Witness(namedtuple('Witness', 'sigmai, ui, gi, omega, V'),
@@ -264,6 +378,10 @@ class NonRevocationClaim(
         result = cls(**d)
         return result._replace(witness=witness)
 
+    def to_str_dict(self):
+        return {
+        }
+
 
 class Claims(namedtuple('Claims', 'primaryClaim, nonRevocClaim'),
              NamedTupleStrSerializer):
@@ -278,21 +396,58 @@ class Claims(namedtuple('Claims', 'primaryClaim, nonRevocClaim'),
             nonRevoc = NonRevocationClaim.fromStrDict(d['nonRevocClaim'])
         return Claims(primaryClaim=primary, nonRevocClaim=nonRevoc)
 
-
-class ProofInput(
-    namedtuple('ProofInput', 'revealedAttrs, predicates, ts, seqNo'),
-    NamedTupleStrSerializer):
-    def __new__(cls, revealedAttrs=None, predicates=None, ts=None, seqNo=None):
-        return super(ProofInput, cls).__new__(cls, revealedAttrs or [],
-                                              predicates or [],
-                                              ts, seqNo)
+    def to_str_dict(self):
+        return {
+            'primary_claim': self.primaryClaim.to_str_dict(),
+            'non_revocation_claim': self.nonRevocClaim.to_str_dict() if self.nonRevocClaim else None
+        }
 
     @classmethod
-    def fromStrDict(cls, d):
-        d = fromDictWithStrValues(d)
-        predicates = [Predicate.fromStrDict(v) for v in d['predicates']]
-        result = cls(**d)
-        return result._replace(predicates=predicates)
+    def from_str_dict(cls, data, n):
+        primary = PrimaryClaim.from_str_dict(data['primary_claim'], n)
+        nonRevoc = None
+        if 'non_revocation_claim' in data and data['non_revocation_claim']:
+            nonRevoc = NonRevocationClaim.fromStrDict(data['non_revocation_claim'])
+
+        return cls(primaryClaim=primary, nonRevocClaim=nonRevoc)
+
+    def __str__(self):
+        return str(self.primaryClaim)
+
+
+class ClaimsPair(dict):
+    def __str__(self):
+        rtn = list()
+        rtn.append('Claims')
+
+        for schema_key, claims in self.items():
+            rtn.append('')
+            rtn.append(schema_key.name)
+            rtn.append(str(schema_key))
+            rtn.append(str(claims))
+
+        return os.linesep.join(rtn)
+
+
+class AttributeInfo(
+    namedtuple('AttributeInfo', 'name, schema_seq_no, issuer_did'),
+    NamedTupleStrSerializer):
+    def __new__(cls, name=None, schema_seq_no=None, issuer_did=None):
+        return super(AttributeInfo, cls).__new__(cls, name, schema_seq_no, issuer_did)
+
+    def to_str_dict(self):
+        return {
+            'name': self.name,
+            'schema_seq_no': self.schema_seq_no,
+            'issuer_did': self.issuer_did
+        }
+
+    @classmethod
+    def from_str_dict(cls, d):
+        schema_seq_no = int(d['schema_seq_no']) if d['schema_seq_no'] else None
+        issuer_did = int(d['issuer_did']) if (('issuer_did' in d) and d['issuer_did']) else None
+        name = d['name']
+        return AttributeInfo(name, schema_seq_no, issuer_did)
 
 
 class ProofClaims(
@@ -427,9 +582,32 @@ class InitProof(namedtuple('InitProof', 'nonRevocInitProof, primaryInitProof'),
 
 
 class PrimaryEqualProof(namedtuple('PrimaryEqualProof',
-                                   'e, v, m, m1, m2, Aprime, revealedAttrNames'),
+                                   'e, v, m, m1, m2, Aprime, revealedAttrs'),
                         NamedTupleStrSerializer):
     pass
+
+    def to_str_dict(self):
+        return {
+            'e': str(crypto_int_to_str(self.e)),
+            'v': str(crypto_int_to_str(self.v)),
+            'm1': str(crypto_int_to_str(self.m1)),
+            'm2': str(crypto_int_to_str(self.m2)),
+            'm': {k: str(crypto_int_to_str(v)) for k, v in self.m.items()},
+            'revealed_attrs': {k: str(v) for k, v in self.revealedAttrs.items()},
+            'a_prime': str(crypto_int_to_str(self.Aprime))
+        }
+
+    @classmethod
+    def from_str_dict(cls, d, n):
+        e = to_crypto_int(d['e'])
+        v = to_crypto_int(d['v'])
+        m1 = to_crypto_int(d['m1'])
+        m2 = to_crypto_int(d['m2'])
+        Aprime = to_crypto_int(d['a_prime'], str(n))
+        revealedAttrs = {k: to_crypto_int(v) for k, v in d['revealed_attrs'].items()}
+        m = {k: to_crypto_int(v) for k, v in d['m'].items()}
+
+        return PrimaryEqualProof(e=e, v=v, m1=m1, m2=m2, m=m, Aprime=Aprime, revealedAttrs=revealedAttrs)
 
 
 class PrimaryPredicateGEProof(
@@ -441,6 +619,27 @@ class PrimaryPredicateGEProof(
         predicate = PredicateGE(**d['predicate'])
         result = cls(**d)
         return result._replace(predicate=predicate)
+
+    def to_str_dict(self):
+        return {
+            'alpha': str(crypto_int_to_str(self.alpha)),
+            'mj': str(crypto_int_to_str(self.mj)),
+            'u': {k: str(crypto_int_to_str(v)) for k, v in self.u.items()},
+            'r': {k: str(crypto_int_to_str(v)) for k, v in self.r.items()},
+            't': {k: str(crypto_int_to_str(v)) for k, v in self.T.items()},
+            'predicate': self.predicate.to_str_dict()
+        }
+
+    @classmethod
+    def from_str_dict(cls, d, n):
+        alpha = to_crypto_int(d['alpha'])
+        mj = to_crypto_int(d['mj'])
+        u = {k: to_crypto_int(v) for k, v in d['u'].items()}
+        r = {k: to_crypto_int(v) for k, v in d['r'].items()}
+        T = {k: to_crypto_int(v, str(n)) for k, v in d['t'].items()}
+        predicate = PredicateGE.from_str_dict(d['predicate'])
+
+        return PrimaryPredicateGEProof(alpha=alpha, mj=mj, u=u, r=r, T=T, predicate=predicate)
 
 
 class NonRevocProof(namedtuple('NonRevocProof', 'XList CProof'),
@@ -461,8 +660,20 @@ class PrimaryProof(namedtuple('PrimaryProof', 'eqProof, geProofs'),
     @classmethod
     def fromStrDict(cls, d):
         eqProof = PrimaryEqualProof.fromStrDict(d['eqProof'])
-        geProofs = [PrimaryPredicateGEProof.fromStrDict(v) for v in
-                    d['geProofs']]
+        geProofs = [PrimaryPredicateGEProof.fromStrDict(v) for v in d['geProofs']]
+        return PrimaryProof(eqProof=eqProof, geProofs=geProofs)
+
+    def to_str_dict(self):
+        return {
+            'eq_proof': self.eqProof.to_str_dict(),
+            'ge_proofs': [p.to_str_dict() for p in self.geProofs]
+        }
+
+    @classmethod
+    def from_str_dict(cls, d, n):
+        eqProof = PrimaryEqualProof.from_str_dict(d['eq_proof'], n)
+        geProofs = [PrimaryPredicateGEProof.from_str_dict(p, n) for p in d['ge_proofs']]
+
         return PrimaryProof(eqProof=eqProof, geProofs=geProofs)
 
 
@@ -480,18 +691,216 @@ class Proof(namedtuple('Proof', 'primaryProof, nonRevocProof'),
             nonRevocProof = NonRevocProof.fromStrDict(d['nonRevocProof'])
         return Proof(primaryProof=primaryProof, nonRevocProof=nonRevocProof)
 
+    def to_str_dict(self):
+        return {
+            'primary_proof': self.primaryProof.to_str_dict()
+        }
 
-class FullProof(namedtuple('FullProof', 'cHash, schemaKeys, proofs, CList'),
+    @classmethod
+    def from_str_dict(cls, d, n):
+        primaryProof = PrimaryProof.from_str_dict(d['primary_proof'], n)
+
+        return Proof(primaryProof=primaryProof)
+
+
+class ProofInfo(namedtuple('ProofInfo', 'proof, schema_seq_no, issuer_did'),
+                NamedTupleStrSerializer):
+    @classmethod
+    def fromStrDict(cls, d):
+        d = fromDictWithStrValues(d)
+        proof = Proof.fromStrDict(d['proof'])
+        result = cls(**d)
+        return result._replace(proof=proof)
+
+    def to_str_dict(self):
+        return {
+            'proof': self.proof.to_str_dict(),
+            'schema_seq_no': self.schema_seq_no,
+            'issuer_did': self.issuer_did
+        }
+
+    @classmethod
+    def from_str_dict(cls, d, n):
+        proof = Proof.from_str_dict(d['proof'], n)
+        schema_seq_no = d['schema_seq_no']
+        issuer_did = d['issuer_did']
+
+        return ProofInfo(proof=proof, schema_seq_no=schema_seq_no, issuer_did=issuer_did)
+
+
+class FullProof(namedtuple('FullProof', 'proofs, aggregatedProof, requestedProof'),
                 NamedTupleStrSerializer):
     def getCredDefs(self):
         return self.proofs.keys()
 
     @classmethod
     def fromStrDict(cls, d):
-        cHash = deserializeFromStr(d['cHash'])
-        schemaKeys = [SchemaKey.fromStrDict(v) for v in
-                      d['schemaKeys']]
-        proofs = [Proof.fromStrDict(v) for v in d['proofs']]
-        CList = [deserializeFromStr(v) for v in d['CList']]
-        return FullProof(cHash=cHash, schemaKeys=schemaKeys, proofs=proofs,
-                         CList=CList)
+        d = fromDictWithStrValues(d)
+        aggregatedProof = AggregatedProof.fromStrDict(d['aggregatedProof'])
+        requestedProof = RequestedProof.fromStrDict(d['requestedProof'])
+        proofs = {k: ProofInfo.fromStrDict(v) for k, v in d['proofs'].items()}
+
+        return FullProof(aggregatedProof=aggregatedProof, proofs=proofs, requestedProof=requestedProof)
+
+    def to_str_dict(self):
+        return {
+            'aggregated_proof': self.aggregatedProof.to_str_dict(),
+            'proofs': {k: v.to_str_dict() for k, v in self.proofs.items()},
+            'requested_proof': self.requestedProof.to_str_dict()
+        }
+
+    @classmethod
+    def from_str_dict(cls, d, n):
+        aggregatedProof = AggregatedProof.from_str_dict(d['aggregated_proof'])
+        requestedProof = RequestedProof.from_str_dict(d['requested_proof'])
+        proofs = {item[0]: ProofInfo.from_str_dict(item[1], n[i]) for i, item in enumerate(d['proofs'].items())}
+
+        return FullProof(aggregatedProof=aggregatedProof, requestedProof=requestedProof, proofs=proofs)
+
+
+class AggregatedProof(namedtuple('AggregatedProof', 'cHash, CList'),
+                      NamedTupleStrSerializer):
+    def to_str_dict(self):
+        return {
+            'c_hash': str(self.cHash),
+            'c_list': [intToArrayBytes(v) for v in self.CList if isCryptoInteger(v)]
+        }
+
+    @classmethod
+    def from_str_dict(cls, d):
+        cHash = int(d['c_hash'])
+        CList = [bytesToInt(v) for v in d['c_list']]
+        return AggregatedProof(cHash=cHash, CList=CList)
+
+
+class RequestedProof(namedtuple('RequestedProof', 'revealed_attrs, unrevealed_attrs, self_attested_attrs, predicates'),
+                     NamedTupleStrSerializer):
+    def __new__(cls, revealed_attrs=None, unrevealed_attrs=None, self_attested_attrs=None, predicates=None):
+        return super(RequestedProof, cls).__new__(cls, revealed_attrs or {}, unrevealed_attrs or {},
+                                                  self_attested_attrs or {}, predicates or {})
+
+    @classmethod
+    def fromStrDict(cls, d):
+        revealed_attrs = {k: [v[0], v[1], v[2]] for k, v in d['revealed_attrs'].items()}
+        predicates = {k: v for k, v in d['predicates'].items()}
+        return RequestedProof(revealed_attrs=revealed_attrs, predicates=predicates)
+
+    def to_str_dict(self):
+        return {
+            'revealed_attrs': self.revealed_attrs,
+            'unrevealed_attrs': self.unrevealed_attrs,
+            'self_attested_attrs': self.self_attested_attrs,
+            'predicates': self.predicates
+        }
+
+    @classmethod
+    def from_str_dict(cls, d):
+        revealed_attrs = d['revealed_attrs']
+        unrevealed_attrs = d['unrevealed_attrs']
+        self_attested_attrs = d['self_attested_attrs']
+        predicates = d['predicates']
+        return RequestedProof(revealed_attrs=revealed_attrs, unrevealed_attrs=unrevealed_attrs,
+                              self_attested_attrs=self_attested_attrs, predicates=predicates)
+
+
+class ClaimAttributeValues(namedtuple('ClaimAttributeValues', 'raw, encoded'),
+                      NamedTupleStrSerializer):
+    def __new__(cls, raw=None, encoded=None):
+        return super(ClaimAttributeValues, cls).__new__(cls, raw, encoded)
+
+    def to_str_dict(self):
+        return [str(self.raw), str(self.encoded)]
+
+    @classmethod
+    def from_str_dict(cls, d):
+        raw = d[0]
+        encoded = int(to_crypto_int(d[1]))
+        return ClaimAttributeValues(raw=raw, encoded=encoded)
+
+
+AvailableClaim = NamedTuple("AvailableClaim", [("name", str),
+                                               ("version", str),
+                                               ("origin", str)])
+
+
+class ProofRequest:
+    def __init__(self, name, version, nonce, attributes={}, verifiableAttributes={}, predicates={}):
+        self.name = name
+        self.version = version
+        self.nonce = nonce
+        self.attributes = attributes
+        self.verifiableAttributes = \
+            {str(uuid.uuid4()): AttributeInfo(name=a) for a in verifiableAttributes} if \
+                isinstance(verifiableAttributes, list) else verifiableAttributes
+        self.predicates = {str(uuid.uuid4()): PredicateGE(attrName=p['attrName'], value=p['value']) for p in
+                           predicates} if isinstance(predicates, list) else predicates
+        self.fulfilledByClaims = []
+        self.selfAttestedAttrs = {}
+        self.ts = None
+        self.seqNo = None
+        # TODO _F_ need to add support for predicates on unrevealed attibutes
+
+    def __eq__(self, other):
+        return self.__dict__ == other.__dict__
+
+    @property
+    def toDict(self):
+        return {
+            "name": self.name,
+            "version": self.version,
+            "nonce": self.nonce,
+            "attributes": self.attributes,
+            "verifiableAttributes": self.verifiableAttributes
+        }
+
+    def to_str_dict(self):
+        return {
+            "name": self.name,
+            "version": self.version,
+            "nonce": str(self.nonce),
+            "requested_attrs": {k: v.to_str_dict() for k, v in self.verifiableAttributes.items()},
+            "requested_predicates": {k: v.to_str_dict() for k, v in self.predicates.items()}
+        }
+
+    @staticmethod
+    def from_str_dict(d):
+        return ProofRequest(name=d['name'],
+                            version=d['version'],
+                            nonce=int(d['nonce']),
+                            attributes=d['attributes'] if 'attributes' in d else {},
+                            verifiableAttributes={k: AttributeInfo.from_str_dict(v) for k, v in
+                                                  d['requested_attrs'].items()},
+                            predicates={k: PredicateGE.from_str_dict(v) for k, v in d['requested_predicates'].items()})
+
+    @property
+    def attributeValues(self):
+        return \
+            'Attributes:' + '\n    ' + \
+            format("\n    ".join(
+                ['{}: {}'.format(k, v)
+                 for k, v in self.attributes.items()])) + '\n'
+
+    @property
+    def verifiableClaimAttributeValues(self):
+        return \
+            'Verifiable Attributes:' + '\n    ' + \
+            format("\n    ".join(
+                ['{}'.format(v.name)
+                 for k, v in self.verifiableAttributes.items()])) + '\n'
+
+    @property
+    def predicateValues(self):
+        return \
+            'Predicates:' + '\n    ' + \
+            format("\n    ".join(
+                ['{}'.format(v.attrName)
+                 for k, v in self.predicates.items()])) + '\n'
+
+    @property
+    def fixedInfo(self):
+        return 'Status: Requested' + '\n' \
+                                     'Name: ' + self.name + '\n' \
+                                                            'Version: ' + self.version + '\n'
+
+    def __str__(self):
+        return self.fixedInfo + self.attributeValues + self.verifiableClaimAttributeValues

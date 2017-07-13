@@ -1,9 +1,25 @@
 # AnonCreds: Anonymous credentials protocol implementation in python
+[![Build Status](https://jenkins.evernym.com/buildStatus/icon?job=Anoncreds/master)](https://jenkins.evernym.com/view/Core/job/Anoncreds/job/master/)
 
 This is a python implementation of the anonymous credentials ideas developed by
 IBM Research (see https://idemix.wordpress.com/ and
 http://www.research.ibm.com/labs/zurich/idemix/). We have built some additional
 features for revocation.
+
+Anonymous credential technology is used to exchange claims and proofs,
+increasing trust between parties in a [self-sovereign identity ecosystem](https://sovrin.org).
+These claims and proofs are not recorded on a distributed ledger like the one provided
+by Indy--but they rely on public keys, accumulators, and revocation registries published
+on the ledger, and they dramatically increase privacy for participants. Hence their
+inclusion with the Indy family of projects.
+
+This particular codebase will soon be superseded by an implentation that is easier to
+call (has cleaner interfaces) in [Indy SDK](https://github.com/hyperledger/indy-sdk).
+Both implementations use the same underlying primitives, and implement the same
+algorithms.
+
+If you want to log bugs or examine the backlog for anoncreds, we recommend that you use
+[Hyperledger's Jira](https://jira.hyperledger.org) and use the INDY-SDK project.
 
 Anonymous Credentials requires a cryptographic framework. We have tested it with charm-crypto.
 ## Installation on Linux
