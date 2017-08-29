@@ -2,6 +2,7 @@ import os
 import sys
 
 from setuptools import setup, find_packages, __version__
+from anoncreds.__metadata__ import __author__, __license__
 
 v = sys.version_info
 if sys.version_info < (3, 5):
@@ -30,13 +31,13 @@ METADATA = os.path.join(SETUP_DIRNAME, 'anoncreds', '__metadata__.py')
 exec(compile(open(METADATA).read(), METADATA, 'exec'))
 
 setup(
-    name='anoncreds',
+    name='indy-anoncreds',
     version=__version__,
     description='Anonymous credentials',
     long_description='Anonymous credentials',
-    url='https://github.com/evernym/anoncreds-priv',
+    url='https://github.com/hyperledger/indy-anoncreds',
     author=__author__,
-    author_email='dev@evernym.us',
+    author_email='hyperledger-indy@lists.hyperledger.org',
     license=__license__,
     keywords='Anonymous credentials',
     packages=find_packages(exclude=['docs', 'docs*']),

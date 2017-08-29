@@ -5,10 +5,10 @@ dynamically.
 
 # noinspection PyUnresolvedReferences
 from charm.core.math.integer import integer, random, randomBits, isPrime, \
-    randomPrime, serialize, deserialize
+    randomPrime, serialize, deserialize, toInt
 
 # noinspection PyUnresolvedReferences
 from charm.toolbox.conversion import Conversion
 
 # noinspection PyUnresolvedReferences
-from charm.toolbox.pairinggroup import PairingGroup, ZR, G1, pair, pc_element
+from charm.toolbox.pairinggroup import PairingGroup, ZR, G1, G2, pair, pc_element
