@@ -22,12 +22,11 @@ def config = [
     codeValidation: true,
     runTests: true,
     failFast: false,
-    sendNotif: true
+    sendNotif: false
 ]
 
 
-env.INDY_AGENT_LINUX_LABEL = env.INDY_AGENT_LINUX_LABEL || 'linux'
-def labels = [env.INDY_AGENT_LINUX_LABEL] // TODO enable windows
+def labels = [env.INDY_AGENT_LINUX_LABEL ?: 'linux'] // TODO enable windows
 
 if (env.INDY_AGENT_WINDOWS_LABEL) {
     labels += env.INDY_AGENT_WINDOWS_LABEL
